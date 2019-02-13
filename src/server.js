@@ -1,5 +1,6 @@
-const { ApolloServer, gql } = require('apollo-server');
-// const { find, filter } = require('lodash');
+const { ApolloServer, gql, AuthenticationError } = require('apollo-server');
+const jwt = require('jsonwebtoken');
+const jwksClient = require('jwks-rsa');
 import { Author, Book } from './store';
 
 const typeDefs = gql`
@@ -38,17 +39,22 @@ const typeDefs = gql`
       authors: () => Author.findAll()
     },
     Mutation: {
-      addBook: (_, {title, cover_image_url, average_rating, authorId }) => {
+      addBook: async (_, {title, cover_image_url, average_rating, authorId }, { user }) => {
+        try {
+          const email = await user; // catching the reject from the user promise.
+          const book = await Book.create({
+            title: title,
+            cover_image_url: cover_image_url,
+            average_rating: average_rating,
+            authorId: authorId
+          });
 
-        return Book.create({
-           title: title,
-           cover_image_url: cover_image_url,
-           average_rating: average_rating,
-           authorId: authorId
-         }).then(book => {
-           return book;
-         });
-       }
+          return book;
+        } catch(e) {
+          throw new AuthenticationError('You must be logged in to do this');
+        }
+      }
+        
     },
     Author: {
       books: (author) => author.getBooks(),
@@ -59,9 +65,43 @@ const typeDefs = gql`
     },
   };
 
+  const client = jwksClient({
+    jwksUri: `https://dev-w4qh6-qv.eu.auth0.com/.well-known/jwks.json`
+  });
+  
+  function getKey(header, cb){
+    client.getSigningKey(header.kid, function(err, key) {
+      var signingKey = key.publicKey || key.rsaPublicKey;
+      cb(null, signingKey);
+    });
+  }  
+
+  const options = {
+    audience: 'aywzpahQ4VKJNy0Xrv3RCoUnOxhgRwK3',
+    issuer: `https://dev-w4qh6-qv.eu.auth0.com/`,
+    algorithms: ['RS256']
+  };
+  
+
   const server = new ApolloServer({
     typeDefs,
-    resolvers
+    resolvers,
+    context: ({ req }) => {
+      // simple auth check on every request
+      const token = req.headers.authorization;
+      const user = new Promise((resolve, reject) => {
+        jwt.verify(token, getKey, options, (err, decoded) => {
+          if(err) {
+            return reject(err);
+          }
+          resolve(decoded.email);
+        });
+      });
+  
+      return {
+        user
+      };
+    },
   });
 
   server.listen().then(({ url }) => {
